@@ -1,3 +1,5 @@
+#!/bin/env python
+
 import argparse
 import logging
 from math import isfinite
