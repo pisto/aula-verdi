@@ -2,14 +2,14 @@
 
 import argparse
 import logging
-from math import isfinite
 import re
 from collections import defaultdict
 from datetime import datetime, timedelta
 from itertools import accumulate, groupby
+from math import isfinite
 from zoneinfo import ZoneInfo
 
-import portion
+import portion as intervals
 import requests
 import toolz
 from numpy import ndarray, uint8
@@ -115,12 +115,14 @@ def main():
             requested hours are available, and if booking for today, set hour_start to the current slot.
             """
             valid_slots_msg = session.post('https://edisuprenotazioni.edisu-piemonte.it:8443/sbs/web/student/slots',
+                                           # TODO: hardcoded 'VERDI (6)'
                                            data={'date': edisu_fmt_day(day), 'hall': 'VERDI (6)'}).json()
             logger.debug(f'/sbs/web/student/slots date={edisu_fmt_day(day)}: {valid_slots_msg}')
             if not ((valid_slots_msg.get('result') or {}).get('data') or {}).get('list') or []:
                 raise RuntimeError(f'impossibile ottenere la lista di slot per il giorno {edisu_fmt_day(day)}: '
                                    f'{valid_slots_msg["message"]}')
             seats_msg = session.post('https://edisuprenotazioni.edisu-piemonte.it:8443/sbs/web/student/seats',
+                                     # TODO: hardcoded 'VERDI (6)'
                                      data={'date': edisu_fmt_day(day), 'hall': 'VERDI (6)'}).json()
             logger.debug(f'/sbs/web/student/seats date={edisu_fmt_day(day)}: {seats_msg}')
             if not (seats_msg.get('result') or {}).get('seats') or []:
@@ -155,11 +157,11 @@ def main():
             When it is impossible to book a single shift for the desired times, you need to split the booking across
             different seats. Solve this problem by mapping it to a graph and find the shortest path between two
             vertices.
-            A shift is a contiguous list of free slots in a particular seat. A change is a slot boundary (time when
-            you may change seat). Build a graph where the vertices are the changes, and the edges are bookable shifts.
-            A bookable shift (from the edisu list fetched above) can also be partially booked, with a starting time that
-            can be later than the full shift start. This means that a shift of e.g. three hours maps to multiple edges:
-            1 three-hour shift, 2 two-hours-and-a-half shifts, 3 two-hours shifts, etc.
+            A shift is a contiguous list of free slots in a particular seat. A shift change is a slot boundary (time
+            when you may change seat). Build a graph where the vertices are the changes, and the edges are
+            bookable shifts. A bookable shift (from the edisu list fetched above) can also be partially booked, with a
+            starting time that can be later than the full shift start. This means that a shift of e.g. three hours maps
+            to multiple edges: 1 three-hour shift, 2 two-hours-and-a-half shifts, 3 two-hours shifts, etc.
             After building the graph (in terms of a dense matrix), use Dijkstra's algorithm to find the shortest path
             (least number of changes/vertices) between the start and end change, that is hour_start and hour_end. To
             avoid booking very short shifts, solve multiple times the shortest path problem by feeding a truncated graph
@@ -170,43 +172,54 @@ def main():
             If it was possible to have all the solutions, we would not need to run Dijkstra's algorithm multiple times
             with a truncated graph, but we could select the optimal solution out of the least-changes solutions.
             """
-            changes_n = 1 + int((hour_end - hour_start) / timedelta(minutes=30))
-            change2id = dict(zip(accumulate([hour_start] + [timedelta(minutes=30)] * (changes_n - 2)),
-                                 range(changes_n - 1)))
+            shift_changes_n = 1 + int((hour_end - hour_start) / timedelta(minutes=30))
+            change2id = dict(zip(accumulate([hour_start] + [timedelta(minutes=30)] * (shift_changes_n - 1)),
+                                 range(shift_changes_n)))
             # turn keys into hour strings, '14:00' '14:30' etc.
             change2id = toolz.keymap(edisu_fmt_hour, change2id)
             id2change = dict(map(reversed, change2id.items()))
-            id2change[changes_n - 1] = edisu_fmt_hour(hour_end)
             # use a union of intervals to represent existing bookings
-            booked_shifts = portion.empty()
+            already_booked_shifts = intervals.empty()
+            full_requested_shift = intervals.closed(0, shift_changes_n - 1)
             for booked_shift in bookings_msg['result'].get('slots', []):
+                """
+                From the Android API reverse: booking status is
+                0 -> Canceled
+                1 -> Upcoming
+                2 -> Completed
+                4 -> Pending
+                bitset?
+                """
+                # TODO: hall 6 is hard-coded for Verdi
                 if booked_shift['booking_status'] == 0 or booked_shift['hall_id'] != 6:
                     # cancelled, expired, or other room
                     continue
-                shift_start, shift_end = (booked_shift['start_time'], booked_shift['end_time'])
+                shift_start, shift_end = booked_shift['start_time'], booked_shift['end_time']
                 if shift_start >= edisu_fmt_hour(hour_end) or shift_end <= edisu_fmt_hour(hour_start):
                     continue
-                booked_shifts |= portion.closed(change2id.get(shift_start, 0), change2id.get(shift_end, changes_n - 1))
-            if (portion.closed(0, changes_n - 1) - booked_shifts).empty:
+                already_booked_shifts |= intervals.closed(change2id.get(shift_start, 0),
+                                                          change2id.get(shift_end, shift_changes_n - 1))
+            if (full_requested_shift - already_booked_shifts).empty:
                 logger.info(f'Giorno {edisu_fmt_day(day)} già prenotato')
                 raise DaySkip()
-            if not booked_shifts.empty:
+            if not already_booked_shifts.empty:
                 booked_shifts_hour = [f'{id2change[interval.lower]}->{id2change[interval.upper]}'
-                                      for interval in booked_shifts]
+                                      for interval in already_booked_shifts]
                 logger.warning(f'Prenotazioni esistenti per il giorno {edisu_fmt_day(day)}: '
                                f'{", ".join(booked_shifts_hour)}')
             # build the full changes graph
-            changes_graph = ndarray((changes_n, changes_n), dtype=uint8)
-            changes_graph.fill(0)
+            shift_changes_graph = ndarray((shift_changes_n, shift_changes_n), dtype=uint8)
+            shift_changes_graph.fill(0)
             shift2seats = defaultdict(set)
             # keep track of the slots that cannot be booked from any seat
-            unbookable_slots = portion.closed(0, changes_n - 1)
+            unbookable_slots = full_requested_shift
             for seat in seats_msg['result']['seats']:
                 for booked, shift in groupby(seat['seat'], lambda slot: int(slot['booking_status']) > 0):
                     if booked:
                         continue
-                    # filter out slots that are out of hour_start and hour_end
-                    shift = [slot for slot in shift if slot['slot_time'] in change2id]
+                    # filter out slots that are out of hour_start and hour_end. slot_time in the JSON is the slot start
+                    shift = [slot for slot in shift
+                             if slot['slot_time'] in change2id and slot['slot_time'] < edisu_fmt_hour(hour_end)]
                     if not shift:
                         continue
                     change_start, change_end = change2id[shift[0]['slot_time']], change2id[shift[-1]['slot_time']] + 1
@@ -214,17 +227,16 @@ def main():
                     for i in range(change_start, change_end):
                         for j in range(i + 1, change_end + 1):
                             # remove the slots that have been booked already
-                            for free_shift in portion.closed(i, j) - booked_shifts:
+                            for free_shift in intervals.closed(i, j) - already_booked_shifts:
                                 if free_shift.empty:
-                                    # returned when portion.closed(i, j) is entirely contained in booked_shifts
                                     break
                                 unbookable_slots -= free_shift
-                                changes_graph[free_shift.lower, free_shift.upper] = 1
+                                shift_changes_graph[free_shift.lower, free_shift.upper] = 1
                                 shift2seats[(free_shift.lower, free_shift.upper)].add(
                                     (seat['seat_name'], seat['seat_id'])
                                 )
             # do not count as unbookable the shifts that we already booked
-            unbookable_slots -= booked_shifts
+            unbookable_slots -= already_booked_shifts
             if not unbookable_slots.empty:
                 unbookable_slots_hours = [f'{id2change[interval.lower]}->{id2change[interval.upper]}'
                                           for interval in unbookable_slots]
@@ -233,56 +245,61 @@ def main():
                 raise DaySkip()
 
             # run the Dijkstra algorithm with a minimum shift length
-            best_total_shifts = None
-            for shift_min_slots in range(max((changes_n - 1) // 2, 1), 0, -1):
-                changes_graph_pruned = changes_graph.copy()
-                for i in range(changes_n):
-                    for j in range(i + 1, min(i + shift_min_slots, changes_n)):
+            lowest_changes_count = None
+            for min_slots in range(max((shift_changes_n - 1) // 2, 1), 0, -1):
+                changes_graph_pruned = shift_changes_graph.copy()
+                for i in range(shift_changes_n):
+                    for j in range(i + 1, min(i + min_slots, shift_changes_n)):
                         changes_graph_pruned[i, j] = 0
-                # add the booked shifts even if they are shorter than shift_min_slots
-                if not booked_shifts.empty:
-                    for booked_shift in booked_shifts:
+                # add the booked shifts in any case, because we use them to fulfill the request
+                if not already_booked_shifts.empty:
+                    for booked_shift in already_booked_shifts:
                         changes_graph_pruned[booked_shift.lower, booked_shift.upper] = 1
                 changes_graph_pruned = csr_matrix(changes_graph_pruned, dtype=uint8)
-                logger.debug(f'graph date={edisu_fmt_day(day)} min slots={shift_min_slots}:\n{changes_graph_pruned}')
+                logger.debug(f'graph date={edisu_fmt_day(day)} min slots={min_slots}:\n{changes_graph_pruned}')
                 total_shifts, predecessors = dijkstra(changes_graph_pruned, indices=0, unweighted=True,
                                                       return_predecessors=True)
                 if isfinite(total_shifts[-1]):
                     # a path to the first and last vertices (hour_start and hour_end) is found!
-                    best_total_shifts = int(total_shifts[-1])
+                    lowest_changes_count = int(total_shifts[-1])
                     break
-            if best_total_shifts is None:
-                logger.error(f'Impossibile prenotare il periodo richiesto nel giorno {edisu_fmt_day(day)}')
+            if lowest_changes_count is None:
+                # this should never happen because we computed unbookable_slots, anyway...
+                logger.error(f'Algoritmo rotto nel giorno {edisu_fmt_day(day)}')
                 raise DaySkip()
-            best_changes = [0, changes_n - 1]
-            current_change = changes_n - 1
+            # construct the shortest path from the predecessors array
+            best_changes_sequence = [0, shift_changes_n - 1]
+            current_change = shift_changes_n - 1
             while True:
                 previous_change = predecessors[current_change]
                 if previous_change == 0:
                     break
-                best_changes.insert(1, previous_change)
+                best_changes_sequence.insert(1, previous_change)
                 current_change = previous_change
-            logger.debug(f'change sequence date={edisu_fmt_day(day)}: {best_changes}')
-            # turn the best_changes sequences into shifts and book them
-            shifts_to_book = [tuple(best_changes[i:i+2]) for i in range(len(best_changes) - 1)]
+            logger.debug(f'change sequence date={edisu_fmt_day(day)}: {best_changes_sequence}')
+
+            # turn the best_changes_sequence into shifts (change pairs) and book them
+            shifts_to_book = [tuple(best_changes_sequence[i:i+2]) for i in range(len(best_changes_sequence) - 1)]
             for shift in shifts_to_book:
-                if portion.closed(*shift) in booked_shifts:
+                if intervals.closed(*shift) in already_booked_shifts:
                     continue
                 available_seats = list(shift2seats[shift])
                 # TODO: implement seat preference
                 available_seats.sort(key=lambda s: s[0])
                 my_seat = available_seats[0]
+                # TODO: hall_id is hard-coded for Verdi
                 book_msg = {'date': edisu_fmt_day(day), 'hall_id': '6', 'seat_id': my_seat[1],
                             'start_time': id2change[shift[0]], 'end_time': id2change[shift[1]]}
                 try:
                     print(f'prenotazione: {edisu_fmt_day(day)} {book_msg["start_time"]}->{book_msg["end_time"]} '
                           f'posto {my_seat[0]}')
-                    if not args.n:
-                        book_req_msg = book_session.post(
-                            'https://edisuprenotazioni.edisu-piemonte.it/sbs/booking/custombooking',
-                            json=book_msg).json()
-                        if book_req_msg['status'] != 202:
-                            raise RuntimeError(book_req_msg['message'])
+                    if args.n:
+                        continue
+                    book_req_msg = book_session.post(
+                        'https://edisuprenotazioni.edisu-piemonte.it/sbs/booking/custombooking',
+                        json=book_msg).json()
+                    if book_req_msg['status'] != 202:
+                        raise RuntimeError(book_req_msg['message'])
                 except RuntimeError as e:
                     logger.error(f'Errore di prenotazione {edisu_fmt_day(day)} {book_msg["start_time"]}->'
                                  f'{book_msg["end_time"]} posto {my_seat[0]}: {e}')
