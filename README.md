@@ -5,6 +5,7 @@ The program uses some reverse-engineered API to book the seats automatically. Cu
 - books a specified time shift for a specified number of days or period
 - can split up a booking across different seats if a whole shift in a single seat is not available
 - takes into account the own manual bookings.
+- can select across known rooms (verdi, opera, bunker).
 
 Later on I will implement seat preference.
 
@@ -25,16 +26,16 @@ Here is the help message in Italian.
 usage: main.py [-h] -l email:password (-g GG-MM-AA GG-MM-AA | -p #) -o hh:mm
                hh:mm [-e ##] [-n] [-v]
 
-Prenota l'aula Verdi.
+Prenota un'aula edisu.
 
 options:
   -h, --help            show this help message and exit
   -l email:password     Credenziali
+  -a aula               Aula studio da prenotare
   -g GG-MM-AA GG-MM-AA  Giorno di inizio e fine (inclusi) della prenotazione
   -p #                  Prenota a partire da oggi per i prossimi # giorni
   -o hh:mm hh:mm        Ora di inizio e fine della prenotazione (formato 24h)
-  -e ##                 Giorni della settimana da escludere (ad esempio "67"
-                        per sabato e domenica)
+  -e ##                 Giorni della settimana da escludere (ad esempio "67" per sabato e domenica)
   -n                    Non effettuare la prenotazione (dry-run)
   -v                    Aumenta verbosità di logging
 ```
