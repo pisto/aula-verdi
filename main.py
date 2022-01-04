@@ -75,7 +75,7 @@ def main():
         logging.getLogger().setLevel(logging.INFO)
     elif min(2, args.v) == 2:
         logging.getLogger().setLevel(logging.DEBUG)
-    if 'p' in args:
+    if args.p is not None:
         day_start = now.replace(microsecond=0, second=0, minute=0, hour=0)
         day_end = day_start
         for i in range(int(args.p)):
