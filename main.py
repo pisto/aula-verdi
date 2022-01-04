@@ -17,7 +17,7 @@ from scipy.sparse import csr_matrix
 from scipy.sparse.csgraph import dijkstra
 
 logging.basicConfig()
-logger = logging.getLogger('edisu')
+logger = logging.getLogger('aula-verdi')
 
 
 def edisu_fmt_day(time_obj):
@@ -45,12 +45,20 @@ def regex_validator(regex_str):
     return _regex_validator
 
 
+rooms = {
+    'michelangelo': 1,
+    'ormea': 3,
+    'verdi': 6
+}
+
+
 def main():
     tz_rome = ZoneInfo("Europe/Rome")
     now = datetime.now(tz=tz_rome)
-    parser = argparse.ArgumentParser(description='Prenota l\'aula Verdi.')
+    parser = argparse.ArgumentParser(description='Prenota un\'aula edisu.')
     parser.add_argument('-l', metavar='email:password', required=True, type=regex_validator('.+@.*:.*'),
                         help='Credenziali')
+    parser.add_argument('-a', metavar='aula', default='verdi', choices=rooms.keys(), help='Aula studio da prenotare')
     period_spec = parser.add_mutually_exclusive_group(required=True)
     period_spec.add_argument('-g', metavar='GG-MM-AA', nargs=2, type=regex_validator('\\d{1,2}\\-\\d{1,2}\\-\\d{4}'),
                              help='Giorno di inizio e fine (inclusi) della prenotazione')
@@ -83,6 +91,8 @@ def main():
     if desired_hour_start >= desired_hour_end:
         raise ValueError(f'Ora di inizio {desired_hour_start} maggiore dell\'ora di fine {desired_hour_end}')
     email, password = args.l.split(':', 1)
+    room_id = rooms[args.a]
+    room_name_id = f'{args.a.upper()} ({room_id})'
 
     # login through the web API
     login_msg = requests.post('https://edisuprenotazioni.edisu-piemonte.it:8443/sbs/web/signin',
@@ -115,15 +125,13 @@ def main():
             requested hours are available, and if booking for today, set hour_start to the current slot.
             """
             valid_slots_msg = session.post('https://edisuprenotazioni.edisu-piemonte.it:8443/sbs/web/student/slots',
-                                           # TODO: hardcoded 'VERDI (6)'
-                                           data={'date': edisu_fmt_day(day), 'hall': 'VERDI (6)'}).json()
+                                           data={'date': edisu_fmt_day(day), 'hall': room_name_id}).json()
             logger.debug(f'/sbs/web/student/slots date={edisu_fmt_day(day)}: {valid_slots_msg}')
             if not ((valid_slots_msg.get('result') or {}).get('data') or {}).get('list') or []:
                 raise RuntimeError(f'impossibile ottenere la lista di slot per il giorno {edisu_fmt_day(day)}: '
                                    f'{valid_slots_msg["message"]}')
             seats_msg = session.post('https://edisuprenotazioni.edisu-piemonte.it:8443/sbs/web/student/seats',
-                                     # TODO: hardcoded 'VERDI (6)'
-                                     data={'date': edisu_fmt_day(day), 'hall': 'VERDI (6)'}).json()
+                                     data={'date': edisu_fmt_day(day), 'hall': room_name_id}).json()
             logger.debug(f'/sbs/web/student/seats date={edisu_fmt_day(day)}: {seats_msg}')
             if not (seats_msg.get('result') or {}).get('seats') or []:
                 raise RuntimeError(f'impossibile ottenere la lista posti per il giorno {edisu_fmt_day(day)}: '
@@ -190,8 +198,7 @@ def main():
                 4 -> Pending
                 bitset?
                 """
-                # TODO: hall 6 is hard-coded for Verdi
-                if booked_shift['booking_status'] == 0 or booked_shift['hall_id'] != 6:
+                if booked_shift['booking_status'] == 0 or booked_shift['hall_id'] != room_id:
                     # cancelled, expired, or other room
                     continue
                 shift_start, shift_end = booked_shift['start_time'], booked_shift['end_time']
@@ -287,8 +294,7 @@ def main():
                 # TODO: implement seat preference
                 available_seats.sort(key=lambda s: s[0])
                 my_seat = available_seats[0]
-                # TODO: hall_id is hard-coded for Verdi
-                book_msg = {'date': edisu_fmt_day(day), 'hall_id': '6', 'seat_id': my_seat[1],
+                book_msg = {'date': edisu_fmt_day(day), 'hall_id': str(room_id), 'seat_id': my_seat[1],
                             'start_time': id2change[shift[0]], 'end_time': id2change[shift[1]]}
                 try:
                     print(f'prenotazione: {edisu_fmt_day(day)} {book_msg["start_time"]}->{book_msg["end_time"]} '
@@ -296,8 +302,7 @@ def main():
                     if args.n:
                         continue
                     book_req_msg = book_session.post(
-                        'https://edisuprenotazioni.edisu-piemonte.it/sbs/booking/custombooking',
-                        json=book_msg).json()
+                        'https://edisuprenotazioni.edisu-piemonte.it/sbs/booking/custombooking', json=book_msg).json()
                     if book_req_msg['status'] != 202:
                         raise RuntimeError(book_req_msg['message'])
                 except RuntimeError as e:
