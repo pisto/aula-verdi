@@ -206,14 +206,14 @@ def main():
                     continue
                 already_booked_shifts |= intervals.closed(change2id.get(shift_start, 0),
                                                           change2id.get(shift_end, shift_changes_n - 1))
-            if (full_requested_shift - already_booked_shifts).empty:
-                logger.info(f'Giorno {edisu_fmt_day(day)} già prenotato')
-                raise DaySkip()
             if not already_booked_shifts.empty:
                 booked_shifts_hour = [f'{id2change[interval.lower]}->{id2change[interval.upper]}'
                                       for interval in already_booked_shifts]
-                logger.warning(f'Prenotazioni esistenti per il giorno {edisu_fmt_day(day)}: '
+                logger.info(f'Prenotazioni esistenti per il giorno {edisu_fmt_day(day)}: '
                                f'{", ".join(booked_shifts_hour)}')
+            if (full_requested_shift - already_booked_shifts).empty:
+                logger.info(f'Giorno {edisu_fmt_day(day)} già prenotato')
+                raise DaySkip()
             # build the full changes graph
             shift_changes_graph = ndarray((shift_changes_n, shift_changes_n), dtype=uint8)
             shift_changes_graph.fill(0)
