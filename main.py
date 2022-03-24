@@ -60,7 +60,7 @@ def main():
                         help='Credenziali')
     parser.add_argument('-a', metavar='aula', default='verdi', choices=rooms.keys(), help='Aula studio da prenotare')
     period_spec = parser.add_mutually_exclusive_group(required=True)
-    period_spec.add_argument('-g', metavar='GG-MM-AA', nargs=2, type=regex_validator('\\d{1,2}\\-\\d{1,2}\\-\\d{4}'),
+    period_spec.add_argument('-g', metavar='GG-MM-AAAA', nargs=2, type=regex_validator('\\d{1,2}\\-\\d{1,2}\\-\\d{4}'),
                              help='Giorno di inizio e fine (inclusi) della prenotazione')
     period_spec.add_argument('-p', metavar='#', type=regex_validator('\\d+'),
                              help='Prenota a partire da oggi per i prossimi # giorni')
