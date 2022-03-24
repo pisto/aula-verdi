@@ -292,7 +292,7 @@ def main():
                     continue
                 available_seats = list(shift2seats[shift])
                 # TODO: implement seat preference
-                available_seats.sort(key=lambda s: s[0])
+                available_seats.sort(key=lambda s: int(s[0]))
                 my_seat = available_seats[0]
                 book_msg = {'date': edisu_fmt_day(day), 'hall_id': str(room_id), 'seat_id': my_seat[1],
                             'start_time': id2change[shift[0]], 'end_time': id2change[shift[1]]}
