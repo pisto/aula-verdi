@@ -125,13 +125,13 @@ def main():
             requested hours are available, and if booking for today, set hour_start to the current slot.
             """
             valid_slots_msg = session.post('https://edisuprenotazioni.edisu-piemonte.it:8443/sbs/web/student/slots',
-                                           data={'date': edisu_fmt_day(day), 'hall': room_name_id}).json()
+                                           data={'date': edisu_fmt_day(day), 'hall': room_name_id}, timeout=60).json()
             logger.debug(f'/sbs/web/student/slots date={edisu_fmt_day(day)}: {valid_slots_msg}')
             if not ((valid_slots_msg.get('result') or {}).get('data') or {}).get('list') or []:
                 raise RuntimeError(f'impossibile ottenere la lista di slot per il giorno {edisu_fmt_day(day)}: '
                                    f'{valid_slots_msg["message"]}')
             seats_msg = session.post('https://edisuprenotazioni.edisu-piemonte.it:8443/sbs/web/student/seats',
-                                     data={'date': edisu_fmt_day(day), 'hall': room_name_id}).json()
+                                     data={'date': edisu_fmt_day(day), 'hall': room_name_id}, timeout=60).json()
             logger.debug(f'/sbs/web/student/seats date={edisu_fmt_day(day)}: {seats_msg}')
             if not (seats_msg.get('result') or {}).get('seats') or []:
                 raise RuntimeError(f'impossibile ottenere la lista posti per il giorno {edisu_fmt_day(day)}: '
@@ -155,7 +155,7 @@ def main():
                              f'{edisu_fmt_hour(hour_end)}, salto questo giorno')
                 raise DaySkip()
             bookings_msg = session.post('https://edisuprenotazioni.edisu-piemonte.it:8443/sbs/web/studentbookinglist',
-                                        data={'date': edisu_fmt_day(day), 'filter': -1}).json()
+                                        data={'date': edisu_fmt_day(day), 'filter': -1}, timeout=60).json()
             logger.debug(f'/sbs/web/studentbookinglist date={edisu_fmt_day(day)}: {bookings_msg}')
             if bookings_msg.get('status', 0) != 202:
                 raise RuntimeError(f'impossibile ottenere la lista prenotazioni per il giorno {edisu_fmt_day(day)}: '
@@ -302,7 +302,8 @@ def main():
                     if args.n:
                         continue
                     book_req_msg = book_session.post(
-                        'https://edisuprenotazioni.edisu-piemonte.it/sbs/booking/custombooking', json=book_msg).json()
+                        'https://edisuprenotazioni.edisu-piemonte.it/sbs/booking/custombooking', timeout=60,
+                        json=book_msg).json()
                     if book_req_msg['status'] != 202:
                         raise RuntimeError(book_req_msg['message'])
                 except RuntimeError as e:
